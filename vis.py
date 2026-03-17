@@ -1,0 +1,151 @@
+import open3d as o3d
+import numpy as np
+import os
+import time
+import argparse
+import wandb
+import trimesh
+
+
+import torch
+from torch.utils.data import DataLoader
+from human_body_prior.body_model.body_model import BodyModel
+from human_body_prior.tools.model_loader import load_model
+from human_body_prior.tools.omni_tools import copy2cpu as c2c
+from human_body_prior.models.vposer_model import VPoser
+
+from configs import cfg, update_config
+from dataset.dataloader import PoseDataset
+from model.transformer import PoseTransformer, PoseTransformerConfig
+from tools.utils import time_str, AverageMeter, save_ckpt, set_seed, get_reload_weight
+from metric.metric import evaluate_metrics, mpjpe_at_intervals
+from batch_engine import train, eval
+
+from tqdm import tqdm
+from tools.utils import AverageMeter
+
+
+def main(cfg, args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print('device is', device)
+
+    test_ds = PoseDataset(root='data', 
+                        split='test', 
+                        device=device,
+                        obs_len=cfg.DATA.OBS,
+                        pred_len=cfg.DATA.PRED,
+                        stride=cfg.DATA.STRIDE,)
+
+    test_loader = DataLoader(test_ds, batch_size=cfg.TRAIN.BATCH, shuffle=False, num_workers=4, pin_memory=True)
+
+    bm = BodyModel(bm_fname='data/VPoserModelFiles/smplx_neutral_model.npz').to(device)
+    vp, ps = load_model('data/VPoserModelFiles/vposer_v2_05', model_code=VPoser,
+                                remove_words_in_model_weights='vp_model.',
+                                disable_grad=True,
+                                comp_device=device)
+    vp = vp.to(device)
+
+    config = PoseTransformerConfig(
+        obs_len=cfg.DATA.OBS,
+        pred_len=cfg.DATA.PRED,
+        pose_dim=63,
+        latent_dim=32,
+        n_layer=cfg.TRANSFORMER.LAYER,
+        n_head=cfg.TRANSFORMER.HEAD,
+        n_embd=cfg.TRANSFORMER.EMBED,
+        dropout=cfg.TRANSFORMER.DROPOUT,
+    )
+
+    model = PoseTransformer(vp, config).to(device)
+    model.eval()
+    model = get_reload_weight(model_pth='saved_model/2026-03-16_23:15:56/10_epoch.pth', # --dim 256 --layer 6
+                            model=model)
+
+    gt_list = []
+    pred_list = []
+    with torch.no_grad():
+        for step, (obs, pred_gt) in enumerate(tqdm(test_loader)):
+            batch_time = time.time()
+
+            obs = obs.to(device)
+            pred_gt = pred_gt.to(device)
+
+            pred = model(obs, targets=pred_gt)
+
+            gt_list.append(pred_gt.cpu().numpy())
+            pred_list.append(pred.cpu().detach().numpy())
+        
+    gt_label = np.concatenate(gt_list, axis=0)
+    pred_label = np.concatenate(pred_list, axis=0)
+
+    # reshape
+    pred_ = pred_label.reshape(-1, 60, 21, 3)
+    gt_   = gt_label.reshape(-1, 60, 21, 3)
+
+    # joint error (N, T, 21)
+    joint_error = np.linalg.norm(pred_ - gt_, axis=-1)
+    frame_error = joint_error.mean(axis=2)
+    min_idx = np.argmin(frame_error)  # flatten index
+    n, t = np.unravel_index(min_idx, frame_error.shape) 
+
+    print(f"Best sample index: {n}")
+    print(f"Best frame index: {t}")
+    print(f"Min MPJPE: {frame_error[n, t]}")
+
+    best_gt   = gt_label[n, t]    # (63,)
+    best_pred = pred_label[n, t]  # (63,)
+
+    originalPoses = {'pose_body':torch.from_numpy(best_gt).unsqueeze(0).cuda()}
+    recoveredPoses = {'pose_body':torch.from_numpy(best_pred).unsqueeze(0).cuda()}
+
+    bmodelorig = bm(**originalPoses) #bm = BodyModel(bm_fname=bm_fname).to(device) -> SMPL body model인거고 pose parameter를 넣으면 3D 사람 메쉬를 만들어주는 함수
+    bmodelreco = bm(**recoveredPoses)
+    vorig = c2c(bmodelorig.v) # original # .v는 mesh의 vertex 좌표
+    vreco = c2c(bmodelreco.v) # recovered
+    faces = c2c(bm.f) #
+
+    mesh1 = trimesh.base.Trimesh(vorig.squeeze(0), faces)
+    mesh1.visual.vertex_colors = [254, 254, 254]
+    mesh2 = trimesh.base.Trimesh(vreco.squeeze(0), faces)
+    mesh2.visual.vertex_colors = [254, 66, 200]
+    mesh2.apply_translation([1, 0, 0])  #use [0,0,0] to overlay them on each other
+    scene = trimesh.Scene([mesh1, mesh2])
+    scene.export("scene.glb")
+
+    test_mpjpe, test_ade, test_fde = evaluate_metrics(pred_label, gt_label)
+    test__mpjpe_itv = mpjpe_at_intervals(pred_label, gt_label)
+
+    print("\n==> Test at different horizons")
+    for k,v in test__mpjpe_itv.items():
+        print(f"{k} ms : {v:.3f}")
+    print("-"*80)
+    print(f"ADE - Test: {test_ade}")
+    print("-"*80)
+    print(f"FDE - Test: {test_fde}")
+    print("="*80)
+
+
+def argument_parser():
+    parser = argparse.ArgumentParser(description="Transformer based Pose Forecasting",
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument(
+        "--cfg", help="decide which cfg to use", type=str,
+        default="./configs/pose.yaml")
+    
+    parser.add_argument("--lr", type=float,default=None)
+    parser.add_argument("--dim", type=int,default=None)
+    parser.add_argument("--wd", type=float,default=None)
+    parser.add_argument("--obs", type=int,default=None)
+    parser.add_argument("--pred", type=int,default=None)
+    parser.add_argument("--layer", type=int,default=None)
+
+    args = parser.parse_args()
+    return args
+
+
+if __name__ == '__main__':
+    args = argument_parser()
+
+    update_config(cfg, args)
+    main(cfg, args)

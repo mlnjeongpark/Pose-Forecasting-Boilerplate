@@ -1,0 +1,19 @@
+NAME: 'pose'
+
+TRAIN:
+  EPOCH: 500
+  BATCH: 64
+  LR: 1e-4
+  WD: 1e-2
+  LOSS_W: [0.5, 1]
+
+DATA:
+  OBS: 30
+  PRED: 60
+  STRIDE: 1
+
+TRANSFORMER:
+  LAYER: 6
+  HEAD: 4
+  EMBED: 256
+  DROPOUT: 0.1
