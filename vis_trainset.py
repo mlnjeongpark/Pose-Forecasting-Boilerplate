@@ -28,14 +28,13 @@ from tools.utils import AverageMeter
 def main(cfg, args):
 
     cur_time = time_str()
-    # os.makedirs(f'vis/{cur_time}')
-    # os.makedirs(f'vis/')
+    os.makedirs(f'vis/{cur_time}')
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('device is', device)
 
     test_ds = PoseDataset(root='data', 
-                        split='test', 
+                        split='train', 
                         device=device,
                         obs_len=cfg.DATA.OBS,
                         pred_len=cfg.DATA.PRED,
@@ -67,7 +66,7 @@ def main(cfg, args):
                             #   model_pth='saved_model/2026-03-17_17:27:26/3_epoch.pth',
                             #   model_pth='saved_model/2026-03-18_00:35:36/12_epoch.pth',
                             # model_pth='saved_model/2026-03-18_01:40:32/0_epoch.pth',
-                            model_pth='saved_model/2026-03-19_01:38:28/3_epoch.pth',
+                            model_pth='saved_model/2026-03-18_16:49:51/3_epoch.pth',
                             model=model)
 
     gt_list = []
@@ -113,35 +112,7 @@ def main(cfg, args):
             mesh2.visual.vertex_colors = [254, 66, 200]
             mesh2.apply_translation([1, 0, 0])  #use [0,0,0] to overlay them on each other
             scene = trimesh.Scene([mesh1, mesh2])
-            scene.export(f"vis/{bch}_{fms}.glb")
-
-            
-            mesh1 = trimesh.base.Trimesh(vorig.squeeze(0), faces)
-            mesh1.visual.vertex_colors = [254, 254, 254]
-            mesh2 = trimesh.base.Trimesh(vreco.squeeze(0), faces)
-            mesh2.visual.vertex_colors = [254, 66, 200]
-            mesh2.apply_translation([0, 0, 0]) 
-            meshes = [mesh1, mesh2]
-            joints = c2c(bmodelorig.Jtr).squeeze(0)
-            origjoints = joints[0:23, :]   #ignore finger joints
-            joints = c2c(bmodelreco.Jtr).squeeze(0) 
-            recojoints = joints[0:23, :]  #ignore finger joints
-
-            print(origjoints.shape, recojoints.shape)
-            for i in range(origjoints.shape[0]):
-                sphere = trimesh.primitives.Sphere(radius=.02, center=origjoints[i,:])
-                sphere.apply_translation([1, 0, 0])
-                sphere.visual.vertex_colors = [254, 254, 254]
-                meshes.append(sphere)
-                sphere = trimesh.primitives.Sphere(radius=.02, center=recojoints[i,:])
-                sphere.apply_translation([1, 0, 0])
-                sphere.visual.vertex_colors = [254, 150, 200]
-                meshes.append(sphere)
-
-            scene2 = trimesh.Scene(meshes)
-            # scene2.export(f"vis/{cur_time}/sphere_{bch}_{fms}.glb")
-            scene2.export(f"vis/{bch}_{fms}_sphere.glb")
-
+            scene.export(f"vis/{cur_time}/scene_{bch}_{fms}.glb")
             if prev_pred is None:
                 prev_pred = best_pred
             else:
@@ -152,7 +123,7 @@ def main(cfg, args):
                 mesh3.visual.vertex_colors = [0, 66, 200]
                 mesh3.apply_translation([1, 0, 0])  #use [0,0,0] to overlay them on each other
                 scene = trimesh.Scene([mesh2, mesh3])
-                scene.export(f"vis/{bch}_{fms}_overlap.glb")
+                scene.export(f"vis/{cur_time}/scene_{bch}_{fms}_overlap.glb")
 
     test_mpjpe, test_ade, test_fde = evaluate_metrics(pred_label, gt_label)
     test__mpjpe_itv = mpjpe_at_intervals(pred_label, gt_label)

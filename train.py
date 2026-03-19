@@ -28,7 +28,7 @@ def main(cfg, args):
     #     os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
     
-    wandb.init(project=f'Pose-Forecasting_lr_wd'
+    wandb.init(project=f'Pose-Forecasting_obs{cfg.DATA.OBS}_pred{cfg.DATA.PRED}'
                 # ,mode="disabled"
             )
 
@@ -84,7 +84,8 @@ def main(cfg, args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.TRAIN.LR, weight_decay=cfg.TRAIN.WD)
     # Scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
-                                                           T_max=total_epoch * len(train_loader),
+                                                           T_max=total_epoch,
+                                                        #    T_max=total_epoch * len(train_loader),
                                                            eta_min=1e-6)
 
     # Loss
@@ -93,6 +94,7 @@ def main(cfg, args):
     # Train
     for e in range(total_epoch):
         train_gt, train_pred = train(e, train_loader, model, loss_w, optimizer, scheduler, device, save_path)
+        # scheduler.step()
         test_gt, test_pred = eval(e, test_loader, model, loss_w, optimizer, scheduler, device, save_path)
 
         train_mpjpe, train_ade, train_fde = evaluate_metrics(train_pred, train_gt)

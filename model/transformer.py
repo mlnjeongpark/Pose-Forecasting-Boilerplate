@@ -84,10 +84,10 @@ class Block(nn.Module):
             c_fc   = nn.Linear(config.n_embd, 4 * config.n_embd),
             c_proj = nn.Linear(4 * config.n_embd, config.n_embd),
             act    = NewGELU(),
-            drop   = nn.Dropout(config.dropout),
+            # drop   = nn.Dropout(config.dropout),
         ))
         m = self.mlp
-        self.mlpf = lambda x: m.drop(m.c_proj(m.act(m.c_fc(x))))
+        self.mlpf = lambda x: (m.c_proj(m.act(m.c_fc(x))))
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -112,7 +112,6 @@ class PoseTransformer(nn.Module):
     """
     def __init__(self, vp, config: PoseTransformerConfig):
         super().__init__()
-        self.vp = vp
         self.config = config
 
         self.obs_len = config.obs_len
@@ -121,20 +120,22 @@ class PoseTransformer(nn.Module):
         self.latent_dim = config.latent_dim
         self.block_size = config.block_size
 
-        self.input_proj = nn.Linear(config.latent_dim, config.n_embd)
-        self.pos_emb = nn.Embedding(self.block_size, config.n_embd)
+        self.input_proj = nn.Linear(config.latent_dim, config.n_embd) # nn.Linear(32, 256)
+        self.pos_emb = nn.Embedding(self.block_size, config.n_embd) # nn.Embedding(obs+pred, 256)
 
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.head = nn.Linear(config.n_embd, config.latent_dim)
 
         # learned start token for decoder side
-        self.start_token = nn.Parameter(torch.zeros(1, 1, config.latent_dim))
+        self.start_token = nn.Parameter(torch.zeros(1, 1, config.latent_dim)) # self.start_token.shape -> (1, 1, 32)
 
         self.apply(self._init_weights)
 
         n_params = sum(p.numel() for p in self.parameters())
         print(f"number of parameters: {n_params / 1e6:.2f}M")
+        
+        self.vp = vp
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -210,9 +211,6 @@ class PoseTransformer(nn.Module):
 
         obs_latent = self._encode_pose_seq(obs)   # (B, obs_len, 32)
 
-        # ----------------------------
-        # Training: teacher forcing
-        # ----------------------------
         if targets is not None:
             B2, T_pred, D2 = targets.shape
             assert B2 == B and D2 == self.pose_dim
@@ -230,7 +228,7 @@ class PoseTransformer(nn.Module):
             pred_latent = full_out[:, -self.pred_len:, :]         # only future part
             pred_pose = self._decode_latent_seq(pred_latent)      # (B, pred_len, 63)
 
-            return pred_pose
+            return pred_pose, pred_latent
 
         # ----------------------------
         # Inference: autoregressive rollout

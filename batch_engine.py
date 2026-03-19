@@ -9,11 +9,12 @@ import torch
 import wandb
 
 from tools.utils import time_str, AverageMeter, save_ckpt
-from loss.losses import mse_loss, mpjpe_loss
+from loss.losses import latent_loss, mse_loss, mpjpe_loss
 
 
 def train(epoch, train_loader, model, loss_w, optimizer, scheduler, device, save_path):
     model.train()
+    model.vp.eval()
     running_loss = 0.0
     loss_meter = AverageMeter()
     batch_num = len(train_loader)
@@ -23,17 +24,20 @@ def train(epoch, train_loader, model, loss_w, optimizer, scheduler, device, save
     gt_list = []
     pred_list = []
 
-    for step, (obs, pred_gt) in enumerate(train_loader):
+    for step, (obs, targets) in enumerate(train_loader):
         batch_time = time.time()
 
         obs = obs.to(device)
-        pred_gt = pred_gt.to(device)
+        targets = targets.to(device)
+        tgt_latent = model._encode_pose_seq(targets)
 
-        pred = model(obs, targets=pred_gt)
+        pred_pose, pred_latent = model(obs, targets=targets)
 
-        mse = mse_loss(pred, pred_gt)
-        mpjpe = mpjpe_loss(pred.view(pred.shape[0], pred.shape[1], 21, 3), 
-                           pred_gt.view(pred_gt.shape[0], pred_gt.shape[1], 21, 3))
+        mse = latent_loss(pred_latent, tgt_latent)
+        mpjpe = mpjpe_loss(pred_pose.view(pred_pose.shape[0], pred_pose.shape[1], 21, 3), 
+                           targets.view(targets.shape[0], targets.shape[1], 21, 3))
+        # mpjpe = mpjpe_loss(pred, targets)
+
         loss_list = [mse, mpjpe]
         train_loss = 0
         for i, l in enumerate(loss_w):
@@ -42,7 +46,7 @@ def train(epoch, train_loader, model, loss_w, optimizer, scheduler, device, save
         optimizer.zero_grad(set_to_none=True)
         train_loss.backward()
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
         running_loss += train_loss.item()
 
@@ -64,8 +68,8 @@ def train(epoch, train_loader, model, loss_w, optimizer, scheduler, device, save
                     f'mpjpe_loss: {mpjpe:.4f}, '
                     f'train_loss: {loss_meter.avg:.4f}, \n')
             
-        gt_list.append(pred_gt.cpu().numpy())
-        pred_list.append(pred.cpu().detach().numpy())
+        gt_list.append(targets.cpu().numpy())
+        pred_list.append(pred_pose.cpu().detach().numpy())
 
         
     gt_label = np.concatenate(gt_list, axis=0)
@@ -92,17 +96,18 @@ def eval(epoch, valid_loader, model, loss_w, optimizer, scheduler, device, save_
     gt_list = []
     pred_list = []
     with torch.no_grad():
-        for step, (obs, pred_gt) in enumerate(tqdm(valid_loader)):
+        for step, (obs, targets) in enumerate(tqdm(valid_loader)):
             batch_time = time.time()
 
             obs = obs.to(device)
-            pred_gt = pred_gt.to(device)
+            targets = targets.to(device)
+            tgt_latent = model._encode_pose_seq(targets)
 
-            pred = model(obs, targets=pred_gt)
+            pred_pose, pred_latent = model(obs)
 
-            mse = mse_loss(pred, pred_gt)
-            mpjpe = mpjpe_loss(pred.view(pred.shape[0], pred.shape[1], 21, 3), 
-                            pred_gt.view(pred_gt.shape[0], pred_gt.shape[1], 21, 3))
+            mse = mse_loss(pred_latent, tgt_latent)
+            mpjpe = mpjpe_loss(pred_pose.view(pred_pose.shape[0], pred_pose.shape[1], 21, 3), 
+                            targets.view(targets.shape[0], targets.shape[1], 21, 3))
             loss_list = [mse, mpjpe]
             valid_loss = 0
             for i, l in enumerate(loss_w):
@@ -112,8 +117,8 @@ def eval(epoch, valid_loader, model, loss_w, optimizer, scheduler, device, save_
 
             loss_meter.update(valid_loss)
 
-            gt_list.append(pred_gt.cpu().numpy())
-            pred_list.append(pred.cpu().detach().numpy())
+            gt_list.append(targets.cpu().numpy())
+            pred_list.append(pred_pose.cpu().detach().numpy())
         
     gt_label = np.concatenate(gt_list, axis=0)
     pred_label = np.concatenate(pred_list, axis=0)

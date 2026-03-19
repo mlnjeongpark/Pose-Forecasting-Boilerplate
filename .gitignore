@@ -6,6 +6,7 @@ data/
 saved_model/
 wandb/
 *.out
+vis/
 
 
 # Byte-compiled / optimized / DLL files
