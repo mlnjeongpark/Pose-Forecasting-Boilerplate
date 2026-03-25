@@ -24,12 +24,23 @@ from batch_engine import train, eval
 from tqdm import tqdm
 from tools.utils import AverageMeter
 
-
+from model.baseline import ZeroVelocity, ConstantVelocity
+from model.mlp import PoseMLP, PoseMLPConfig
+from model.rnn import PoseRNN, PoseRNNConfig
+from model.dit import DiffusionTransformer, DiffusionTransformerConfig
 def main(cfg, args):
+    if args.model == 'mlp':
+        ckpt_dir = 'saved_model/2026-03-22_17:27:47/140_epoch.pth'
+    if args.model == 'rnn':
+        ckpt_dir = 'saved_model/rnn/15_30/2026-03-22_19:36:11/73_epoch.pth'
+    if args.model == 'transformer':
+        ckpt_dir = 'saved_model/2026-03-19_18:45:51/499_epoch.pth'
 
-    cur_time = time_str()
+
+    save_dir = f'vis/{args.model}'
     # os.makedirs(f'vis/{cur_time}')
-    # os.makedirs(f'vis/')
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('device is', device)
@@ -50,7 +61,10 @@ def main(cfg, args):
                                 comp_device=device)
     vp = vp.to(device)
 
-    config = PoseTransformerConfig(
+    model_name = cfg.MODEL.NAME
+
+    if model_name == 'transformer':
+        config = PoseTransformerConfig(
         obs_len=cfg.DATA.OBS,
         pred_len=cfg.DATA.PRED,
         pose_dim=63,
@@ -59,15 +73,53 @@ def main(cfg, args):
         n_head=cfg.TRANSFORMER.HEAD,
         n_embd=cfg.TRANSFORMER.EMBED,
         dropout=cfg.TRANSFORMER.DROPOUT,
-    )
+        )
+        model = PoseTransformer(vp, config).to(device)
 
-    model = PoseTransformer(vp, config).to(device)
+    elif model_name == 'zero':
+        model = ZeroVelocity(vp, pred_len=cfg.DATA.PRED).to(device)
+    
+    elif model_name == 'constant':
+        model = ConstantVelocity(vp, pred_len=cfg.DATA.PRED).to(device)
+    
+    elif model_name == 'mlp':
+        config = PoseMLPConfig(
+        obs_len=cfg.DATA.OBS,
+        pred_len=cfg.DATA.PRED,
+        pose_dim=63,
+        latent_dim=32,
+        n_layer=cfg.TRANSFORMER.LAYER,
+        hidden_dim=cfg.TRANSFORMER.EMBED,
+        dropout=cfg.TRANSFORMER.DROPOUT,
+        )
+        model = PoseMLP(vp, config).to(device)
+    
+    elif model_name == 'rnn':
+        config = PoseRNNConfig(
+        obs_len=cfg.DATA.OBS,
+        pred_len=cfg.DATA.PRED,
+        pose_dim=63,
+        latent_dim=32,
+        hidden_dim=cfg.TRANSFORMER.EMBED,
+        )
+        model = PoseRNN(vp, config).to(device)
+
+    elif model_name == 'diff':
+        config = DiffusionTransformerConfig(
+            obs_len=cfg.DATA.OBS,
+            pred_len=cfg.DATA.PRED,
+            pose_dim=63,
+            latent_dim=32,
+            n_layer=cfg.TRANSFORMER.LAYER,
+            n_embd=cfg.TRANSFORMER.EMBED,
+            dropout=cfg.TRANSFORMER.DROPOUT,
+            diffusion_steps=100,
+        )
+
+        model = DiffusionTransformer(vp, config).to(device)
     model.eval()
-    model = get_reload_weight(#model_pth='saved_model/2026-03-16_23:15:56/10_epoch.pth', # --dim 256 --layer 6
-                            #   model_pth='saved_model/2026-03-17_17:27:26/3_epoch.pth',
-                            #   model_pth='saved_model/2026-03-18_00:35:36/12_epoch.pth',
-                            # model_pth='saved_model/2026-03-18_01:40:32/0_epoch.pth',
-                            model_pth='saved_model/2026-03-19_01:38:28/3_epoch.pth',
+    model = get_reload_weight(
+                            model_pth=ckpt_dir,
                             model=model)
 
     gt_list = []
@@ -79,8 +131,7 @@ def main(cfg, args):
             obs = obs.to(device)
             targets = targets.to(device)
 
-            pred_pose, pred_latent = model(obs)
-
+            pred_pose = model(obs)
 
             gt_list.append(targets.cpu().numpy())
             pred_list.append(pred_pose.cpu().detach().numpy())
@@ -113,7 +164,7 @@ def main(cfg, args):
             mesh2.visual.vertex_colors = [254, 66, 200]
             mesh2.apply_translation([1, 0, 0])  #use [0,0,0] to overlay them on each other
             scene = trimesh.Scene([mesh1, mesh2])
-            scene.export(f"vis/{bch}_{fms}.glb")
+            scene.export(f"{save_dir}/{bch}_{fms}.glb")
 
             
             mesh1 = trimesh.base.Trimesh(vorig.squeeze(0), faces)
@@ -121,13 +172,15 @@ def main(cfg, args):
             mesh2 = trimesh.base.Trimesh(vreco.squeeze(0), faces)
             mesh2.visual.vertex_colors = [254, 66, 200]
             mesh2.apply_translation([0, 0, 0]) 
+            scene = trimesh.Scene([mesh1, mesh2])
+            scene.export(f"{save_dir}/{bch}_{fms}_overlay.glb")
             meshes = [mesh1, mesh2]
             joints = c2c(bmodelorig.Jtr).squeeze(0)
             origjoints = joints[0:23, :]   #ignore finger joints
             joints = c2c(bmodelreco.Jtr).squeeze(0) 
             recojoints = joints[0:23, :]  #ignore finger joints
 
-            print(origjoints.shape, recojoints.shape)
+            # print(origjoints.shape, recojoints.shape)
             for i in range(origjoints.shape[0]):
                 sphere = trimesh.primitives.Sphere(radius=.02, center=origjoints[i,:])
                 sphere.apply_translation([1, 0, 0])
@@ -140,7 +193,7 @@ def main(cfg, args):
 
             scene2 = trimesh.Scene(meshes)
             # scene2.export(f"vis/{cur_time}/sphere_{bch}_{fms}.glb")
-            scene2.export(f"vis/{bch}_{fms}_sphere.glb")
+            scene2.export(f"{save_dir}/{bch}_{fms}_sphere.glb")
 
             if prev_pred is None:
                 prev_pred = best_pred
@@ -152,7 +205,7 @@ def main(cfg, args):
                 mesh3.visual.vertex_colors = [0, 66, 200]
                 mesh3.apply_translation([1, 0, 0])  #use [0,0,0] to overlay them on each other
                 scene = trimesh.Scene([mesh2, mesh3])
-                scene.export(f"vis/{bch}_{fms}_overlap.glb")
+                scene.export(f"{save_dir}/{bch}_{fms}_overlap.glb")
 
     test_mpjpe, test_ade, test_fde = evaluate_metrics(pred_label, gt_label)
     test__mpjpe_itv = mpjpe_at_intervals(pred_label, gt_label)
@@ -167,13 +220,14 @@ def main(cfg, args):
     print("="*80)
 
 
+
 def argument_parser():
     parser = argparse.ArgumentParser(description="Transformer based Pose Forecasting",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument(
-        "--cfg", help="decide which cfg to use", type=str,
-        default="./configs/pose.yaml")
+    "--cfg", help="decide which cfg to use", type=str,
+    default="./configs/pose.yaml")
     
     parser.add_argument("--lr", type=float,default=None)
     parser.add_argument("--dim", type=int,default=None)
@@ -181,9 +235,11 @@ def argument_parser():
     parser.add_argument("--obs", type=int,default=None)
     parser.add_argument("--pred", type=int,default=None)
     parser.add_argument("--layer", type=int,default=None)
+    parser.add_argument("--model", type=str,default=None)
 
     args = parser.parse_args()
     return args
+
 
 
 if __name__ == '__main__':

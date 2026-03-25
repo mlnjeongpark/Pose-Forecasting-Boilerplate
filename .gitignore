@@ -2,11 +2,13 @@
 .vscode/
 log/
 __MACOSX/
-data/
+data/AMASS_CMUsubset
+data/VPoserModelFiles
 saved_model/
 wandb/
 *.out
 vis/
+archive/
 
 
 # Byte-compiled / optimized / DLL files

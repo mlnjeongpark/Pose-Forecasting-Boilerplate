@@ -15,6 +15,10 @@ from human_body_prior.models.vposer_model import VPoser
 from configs import cfg, update_config
 from dataset.dataloader import PoseDataset
 from model.transformer import PoseTransformer, PoseTransformerConfig
+from model.baseline import ZeroVelocity, ConstantVelocity
+from model.mlp import PoseMLP, PoseMLPConfig
+from model.rnn import PoseRNN, PoseRNNConfig
+from model.dit import DiffusionTransformer, DiffusionTransformerConfig
 from tools.utils import time_str, AverageMeter, save_ckpt, set_seed, get_reload_weight
 from metric.metric import evaluate_metrics, mpjpe_at_intervals
 from batch_engine import train, eval
@@ -43,7 +47,10 @@ def main(cfg, args):
                                 comp_device=device)
     vp = vp.to(device)
 
-    config = PoseTransformerConfig(
+    model_name = cfg.MODEL.NAME
+
+    if model_name == 'transformer':
+        config = PoseTransformerConfig(
         obs_len=cfg.DATA.OBS,
         pred_len=cfg.DATA.PRED,
         pose_dim=63,
@@ -52,26 +59,67 @@ def main(cfg, args):
         n_head=cfg.TRANSFORMER.HEAD,
         n_embd=cfg.TRANSFORMER.EMBED,
         dropout=cfg.TRANSFORMER.DROPOUT,
-    )
+        )
+        model = PoseTransformer(vp, config).to(device)
 
-    model = PoseTransformer(vp, config).to(device)
-    model.eval()
-    model = get_reload_weight(model_pth='saved_model/2026-03-16_23:15:56/10_epoch.pth', #CUDA_VISIBLE_DEVICES=8 python infer.py --dim 256 --layer 6
-                            model=model)
+    elif model_name == 'zero':
+        model = ZeroVelocity(vp, pred_len=cfg.DATA.PRED).to(device)
+    
+    elif model_name == 'constant':
+        model = ConstantVelocity(vp, pred_len=cfg.DATA.PRED).to(device)
+    
+    elif model_name == 'mlp':
+        config = PoseMLPConfig(
+        obs_len=cfg.DATA.OBS,
+        pred_len=cfg.DATA.PRED,
+        pose_dim=63,
+        latent_dim=32,
+        n_layer=cfg.TRANSFORMER.LAYER,
+        hidden_dim=cfg.TRANSFORMER.EMBED,
+        dropout=cfg.TRANSFORMER.DROPOUT,
+        )
+        model = PoseMLP(vp, config).to(device)
+    
+    elif model_name == 'rnn':
+        config = PoseRNNConfig(
+        obs_len=cfg.DATA.OBS,
+        pred_len=cfg.DATA.PRED,
+        pose_dim=63,
+        latent_dim=32,
+        hidden_dim=cfg.TRANSFORMER.EMBED,
+        )
+        model = PoseRNN(vp, config).to(device)
+
+    elif model_name == 'diff':
+        config = DiffusionTransformerConfig(
+            obs_len=cfg.DATA.OBS,
+            pred_len=cfg.DATA.PRED,
+            pose_dim=63,
+            latent_dim=32,
+            n_layer=cfg.TRANSFORMER.LAYER,
+            n_embd=cfg.TRANSFORMER.EMBED,
+            dropout=cfg.TRANSFORMER.DROPOUT,
+            diffusion_steps=100,
+        )
+
+        model = DiffusionTransformer(vp, config).to(device)
+
 
     gt_list = []
     pred_list = []
     with torch.no_grad():
-        for step, (obs, pred_gt) in enumerate(tqdm(test_loader)):
+        for step, (obs, targets) in enumerate(tqdm(valid_loader)):
             batch_time = time.time()
 
             obs = obs.to(device)
-            pred_gt = pred_gt.to(device)
+            targets = targets.to(device)
+            if not (model_name == 'zero' or model_name == 'constant'):
+                tgt_latent = model._encode_pose_seq(targets)
 
-            pred = model(obs, targets=pred_gt)
-
-            gt_list.append(pred_gt.cpu().numpy())
-            pred_list.append(pred.cpu().detach().numpy())
+            pred_pose = model(obs)
+            
+            gt_list.append(targets.cpu().numpy())
+            pred_list.append(pred_pose.cpu().detach().numpy())
         
     gt_label = np.concatenate(gt_list, axis=0)
     pred_label = np.concatenate(pred_list, axis=0)
@@ -94,37 +142,16 @@ def argument_parser():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument(
-        "--cfg", help="decide which cfg to use", type=str,
-        default="./configs/pose.yaml")
+    "--cfg", help="decide which cfg to use", type=str,
+    default="./configs/pose.yaml")
     
     parser.add_argument("--lr", type=float,default=None)
     parser.add_argument("--dim", type=int,default=None)
-
-    
-    parser.add_argument(
-        "--wd", type=float,
-        default=None,
-
-    )
-
-    parser.add_argument(
-        "--obs", type=int,
-        default=None,
-
-    )
-    parser.add_argument(
-        "--pred", type=int,
-        default=None,
-
-    )
-
-    parser.add_argument(
-        "--layer", type=int,
-        default=None,
-
-    )
-    parser.add_argument("--dim", type=int,default=None)
-
+    parser.add_argument("--wd", type=float,default=None)
+    parser.add_argument("--obs", type=int,default=None)
+    parser.add_argument("--pred", type=int,default=None)
+    parser.add_argument("--layer", type=int,default=None)
+    parser.add_argument("--model", type=str,default=None)
 
     args = parser.parse_args()
     return args

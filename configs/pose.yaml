@@ -5,12 +5,15 @@ TRAIN:
   BATCH: 64
   LR: 1e-4
   WD: 0.0 # 9e-3
-  LOSS_W: [1, 0.01]
+  LOSS_W: [1, 0.1]
 
 DATA:
   OBS: 15
   PRED: 30
   STRIDE: 1
+
+MODEL:
+  NAME: 'diff'
 
 TRANSFORMER:
   LAYER: 8

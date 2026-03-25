@@ -22,6 +22,10 @@ _C.DATA.OBS = 30
 _C.DATA.PRED = 30
 _C.DATA.STRIDE = 1
 
+_C.MODEL = CN()
+_C.MODEL.NAME = 'transformer'
+
+
 _C.TRANSFORMER = CN()
 _C.TRANSFORMER.LAYER = 4
 _C.TRANSFORMER.HEAD = 4
@@ -54,5 +58,8 @@ def update_config(cfg, args):
 
     if args.dim is not None:
         cfg.TRANSFORMER.EMBED = args.dim
+    
+    if args.model is not None:
+        cfg.MODEL.NAME = args.model
         
     cfg.freeze()
